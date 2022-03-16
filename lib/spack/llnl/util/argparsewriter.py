@@ -12,6 +12,9 @@ import sys
 
 from six import StringIO
 
+from typing import Sequence
+from spack.main import SpackArgumentParser
+
 
 class Command(object):
     """Parsed representation of a command from argparse.
@@ -29,8 +32,8 @@ class Command(object):
       - optionals: list of optional arguments (list)
       - subcommands: list of subcommand parsers (list)
     """
-    def __init__(self, prog, description, usage,
-                 positionals, optionals, subcommands):
+    def __init__(self, prog: str, description: str, usage: str,
+                 positionals: list, optionals: list[(Sequence[str], str | tuple[str, ...] | list[str], str, str, str)], subcommands: list[(argparse.ArgumentParser, str, str)]):
         self.prog = prog
         self.description = description
         self.usage = usage
@@ -59,7 +62,7 @@ class ArgparseWriter(argparse.HelpFormatter):
         self.out = sys.stdout if out is None else out
         self.aliases = aliases
 
-    def parse(self, parser, prog):
+    def parse(self, parser: SpackArgumentParser, prog: str):
         """Parses the parser object and returns the relavent components.
 
         Parameters:
@@ -90,13 +93,21 @@ class ArgparseWriter(argparse.HelpFormatter):
             if action.option_strings:
                 flags = action.option_strings
                 dest_flags = fmt._format_action_invocation(action)
+                nargs = action.nargs
                 help = self._expand_help(action) if action.help else ''
                 help = help.replace('\n', ' ')
-                optionals.append((flags, dest_flags, help))
+
+                dest = None
+                if action.choices is not None:
+                    dest = [str(choice) for choice in action.choices]
+                else:
+                    dest = action.dest
+
+                optionals.append((flags, dest, dest_flags, nargs, help))
             elif isinstance(action, argparse._SubParsersAction):
                 for subaction in action._choices_actions:
-                    subparser = action._name_parser_map[subaction.dest]
-                    subcommands.append((subparser, subaction.dest))
+                    subparser: argparse.ArgumentParser = action._name_parser_map[subaction.dest]
+                    subcommands.append((subparser, subaction.dest, subaction.help))
 
                     # Look for aliases of the form 'name (alias, ...)'
                     if self.aliases:
@@ -105,12 +116,12 @@ class ArgparseWriter(argparse.HelpFormatter):
                             aliases = match.group(2).split(', ')
                             for alias in aliases:
                                 subparser = action._name_parser_map[alias]
-                                subcommands.append((subparser, alias))
+                                subcommands.append((subparser, alias, subaction.help))
             else:
                 args = fmt._format_action_invocation(action)
                 help = self._expand_help(action) if action.help else ''
                 help = help.replace('\n', ' ')
-                positionals.append((args, help))
+                positionals.append((args, help, action.choices, action.nargs))
 
         return Command(
             prog, description, usage, positionals, optionals, subcommands)
@@ -143,7 +154,7 @@ class ArgparseWriter(argparse.HelpFormatter):
         cmd = self.parse(parser, prog)
         self.out.write(self.format(cmd))
 
-        for subparser, prog in cmd.subcommands:
+        for subparser, prog, help in cmd.subcommands:
             self._write(subparser, prog, level=level + 1)
 
     def write(self, parser):
@@ -182,7 +193,7 @@ class ArgparseRstWriter(ArgparseWriter):
         super(ArgparseRstWriter, self).__init__(prog, out, aliases)
         self.rst_levels = rst_levels
 
-    def format(self, cmd):
+    def format(self, cmd: Command):
         string = StringIO()
         string.write(self.begin_command(cmd.prog))
 
@@ -193,13 +204,13 @@ class ArgparseRstWriter(ArgparseWriter):
 
         if cmd.positionals:
             string.write(self.begin_positionals())
-            for args, help in cmd.positionals:
+            for args, help, choices, nargs in cmd.positionals:
                 string.write(self.positional(args, help))
             string.write(self.end_positionals())
 
         if cmd.optionals:
             string.write(self.begin_optionals())
-            for flags, dest_flags, help in cmd.optionals:
+            for flags, dest, dest_flags, nargs, help in cmd.optionals:
                 string.write(self.optional(dest_flags, help))
             string.write(self.end_optionals())
 
@@ -266,7 +277,7 @@ class ArgparseRstWriter(ArgparseWriter):
 
 """
 
-        for cmd, _ in subcommands:
+        for cmd, _, _ in subcommands:
             prog = re.sub(r'^[^ ]* ', '', cmd.prog)
             string += '   * :ref:`{0} <{1}>`\n'.format(
                 prog, cmd.prog.replace(' ', '-'))
@@ -277,7 +288,7 @@ class ArgparseRstWriter(ArgparseWriter):
 class ArgparseCompletionWriter(ArgparseWriter):
     """Write argparse output as shell programmable tab completion functions."""
 
-    def format(self, cmd):
+    def format(self, cmd: Command):
         """Returns the string representation of a single node in the
         parser tree.
 
@@ -297,11 +308,11 @@ class ArgparseCompletionWriter(ArgparseWriter):
         # We only care about the arguments/flags, not the help messages
         positionals = []
         if cmd.positionals:
-            positionals, _ = zip(*cmd.positionals)
-        optionals, _, _ = zip(*cmd.optionals)
+            positionals, _, _, _ = zip(*cmd.positionals)
+        optionals, _, _, _, _ = zip(*cmd.optionals)
         subcommands = []
         if cmd.subcommands:
-            _, subcommands = zip(*cmd.subcommands)
+            _, subcommands, _ = zip(*cmd.subcommands)
 
         # Flatten lists of lists
         optionals = [x for xx in optionals for x in xx]
